@@ -1,0 +1,138 @@
+services:
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: loadtest
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  postgres-airflow:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow123
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.8.0
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow123@postgres-airflow:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: supersecret123
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com
+      "
+
+  airflow-webserver:
+    image: apache/airflow:2.8.0
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow123@postgres-airflow:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: supersecret123
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    command: airflow webserver
+    restart: on-failure
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.0
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow123@postgres-airflow:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: supersecret123
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    command: airflow scheduler
+    restart: on-failure
+
+  app1:
+    build: ./app
+    env_file: .env
+    depends_on: [postgres]
+    restart: on-failure
+
+  app2:
+    build: ./app
+    env_file: .env
+    depends_on: [postgres]
+    restart: on-failure
+
+  app3:
+    build: ./app
+    env_file: .env
+    depends_on: [postgres]
+    restart: on-failure
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [app1, app2, app3]
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:0.11.0
+    command: --nginx.scrape-uri=http://nginx/nginx_status
+    depends_on: [nginx]
+    ports:
+      - "9113:9113"
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on: [prometheus]
+
+  locust:
+    build: ./locust
+    depends_on: [nginx]
+    profiles: ["loadtest"]
+    environment:
+      - LOCUST_HOST=http://nginx
+
+volumes:
+  postgres_data:
+  postgres_airflow_data:
+  prometheus_data:
+  grafana_data:
+
